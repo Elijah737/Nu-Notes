@@ -23,6 +23,7 @@ import textwrap
 ROOT = os.path.expanduser("~/nu_notes")
 
 PANE_LIST    = 0
+_PHOSPHOR_ATTR = curses.A_BOLD   # overridden in main() after color init
 PANE_EDITOR  = 1
 PANE_ACTIONS = 2
 
@@ -99,8 +100,15 @@ def logical_to_visual(lrow, lcol, row_map):
 # ── UI helpers ────────────────────────────────────────────────────────────────
 
 def draw_border(win, title="", active=False):
-    attr = curses.A_BOLD if active else curses.A_NORMAL
+    # active pane gets phosphor green bold border; inactive is dim
+    # We receive the phosphor color pair index via a module-level sentinel;
+    # actual styling is applied by the caller passing active=True/False.
+    # Here we just store the flag and let the color be applied after init.
     h, w = win.getmaxyx()
+    if active:
+        attr = _PHOSPHOR_ATTR
+    else:
+        attr = curses.A_DIM
     win.attron(attr)
     try:
         win.border()
@@ -168,10 +176,24 @@ def main(stdscr):
     curses.curs_set(0)
     curses.start_color()
     curses.use_default_colors()
-    curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_WHITE)   # selected item
-    curses.init_pair(3, curses.COLOR_RED,   -1)                   # error
-    curses.init_pair(4, curses.COLOR_CYAN,  -1)                   # notebook label
-    curses.init_pair(5, curses.COLOR_BLACK, curses.COLOR_YELLOW)  # active action
+
+    # Phosphor green: redefine a color slot to #33FF33 if the terminal allows it,
+    # otherwise fall back to the nearest built-in green.
+    if curses.can_change_color() and curses.COLORS >= 16:
+        curses.init_color(10, 200, 1000, 200)   # 0-1000 scale ≈ #33FF33
+        PHOSPHOR = 10
+    else:
+        PHOSPHOR = curses.COLOR_GREEN
+
+    curses.init_pair(1, PHOSPHOR,           -1)               # phosphor on black
+    curses.init_pair(2, curses.COLOR_BLACK,  PHOSPHOR)        # selected highlight
+    curses.init_pair(3, curses.COLOR_RED,    -1)              # error
+    curses.init_pair(4, PHOSPHOR,            -1)              # notebook label
+    curses.init_pair(5, curses.COLOR_BLACK,  PHOSPHOR)        # active action
+
+    PHO = curses.color_pair(1) | curses.A_BOLD                # bright phosphor attr
+    global _PHOSPHOR_ATTR
+    _PHOSPHOR_ATTR = PHO
 
     # ── Navigation state ──────────────────────────────────────────────────
     # cwd_stack: list of directories from ROOT down to current level
@@ -346,12 +368,25 @@ def main(stdscr):
 
         act_win.noutrefresh()
 
-        # Cursor — edit_win refreshed LAST so doupdate places cursor there
+        # Cursor — edit_win refreshed LAST so doupdate places cursor there.
+        # We also paint the character cell under the cursor with phosphor
+        # highlight (black on phosphor-green) so it's visible regardless
+        # of the terminal's own cursor rendering.
         if active_pane == PANE_EDITOR and open_note_name:
             curses.curs_set(2)
             scr_y = max(1, min(vis_cursor_row - editor_vscroll + 1, edit_inner_h))
             scr_x = max(2, min(vis_cursor_x + 2, EDITOR_W - 2))
+            # Highlight the cell under the cursor
+            vrow_idx = vis_cursor_row
+            if vrow_idx < len(visual_rows):
+                row_text = visual_rows[vrow_idx]
+                char_at_cursor = (row_text[vis_cursor_x]
+                                  if vis_cursor_x < len(row_text) else " ")
+            else:
+                char_at_cursor = " "
             try:
+                edit_win.addstr(scr_y, scr_x, char_at_cursor,
+                                curses.color_pair(2) | curses.A_BOLD)
                 edit_win.move(scr_y, scr_x)
             except curses.error:
                 pass
